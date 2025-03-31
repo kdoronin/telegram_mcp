@@ -1,208 +1,169 @@
 # Telegram MCP Server
 
-Сервер для работы с Telegram API через протокол MTProto. Предоставляет REST API для взаимодействия с Telegram.
+English version | [Русская версия](README_RU.md)
 
-## Требования
+Server for working with Telegram API through Model Context Protocol (MCP). Allows AI agents and other MCP clients to interact with Telegram.
 
-- Node.js 14+
-- API ID и API Hash от Telegram
+## Requirements
 
-## Установка
+- Node.js 14+ (or higher)
+- npm
+- API ID and API Hash from Telegram
 
-1. Клонируйте репозиторий:
-```bash
-git clone <repository-url>
-cd telegram-mcp
-```
+## Installation
 
-2. Установите зависимости:
-```bash
-npm install
-```
-
-3. Создайте и настройте файл `.env`:
-```bash
-# Скопируйте пример файла .env
-cp .env.example .env
-# Отредактируйте файл и укажите свои данные
-```
-
-4. Получите API ID и API Hash:
-   - Перейдите на сайт [my.telegram.org](https://my.telegram.org)
-   - Войдите в свой аккаунт
-   - Перейдите в "API development tools"
-   - Создайте новое приложение
-   - Скопируйте API ID и API Hash в файл `.env`
-
-## Запуск
-
-Запустите сервер:
-```bash
-npm start
-```
-
-Для разработки с автоматической перезагрузкой:
-```bash
-npm run dev
-```
-
-## API Endpoints
-
-### Статус сервера
-```
-GET /
-```
-Возвращает статус сервера.
-
-### Выполнение любого метода Telegram API
-```
-POST /api/execute
-```
-Параметры (JSON):
-- `session`: ID сессии (обычно номер телефона)
-- `method`: Метод API Telegram
-- `params`: Параметры метода (опционально)
-
-### Получение списка чатов
-```
-GET /api/dialogs?session=PHONE_NUMBER&limit=100
-```
-Параметры (query):
-- `session`: ID сессии (обычно номер телефона)
-- `limit`: Максимальное количество чатов (опционально, по умолчанию 100)
-
-### Получение сообщений из чата
-```
-GET /api/messages?session=PHONE_NUMBER&chatId=CHAT_ID&limit=100
-```
-Параметры (query):
-- `session`: ID сессии (обычно номер телефона)
-- `chatId`: ID чата или юзернейм
-- `limit`: Максимальное количество сообщений (опционально, по умолчанию 100)
-
-### Отправка сообщения
-```
-POST /api/send
-```
-Параметры (JSON):
-- `session`: ID сессии (обычно номер телефона)
-- `chatId`: ID чата или юзернейм
-- `message`: Текст сообщения
-
-### Получение списка доступных методов
-```
-GET /api/methods
-```
-Возвращает список доступных методов API с информацией о параметрах.
-
-## Документация API
-
-Сервер предоставляет полную документацию API в формате Swagger/OpenAPI:
-
-```
-GET /api-docs
-```
-
-Это интерактивная документация, которая позволяет изучать API и делать тестовые запросы. 
-
-Также доступна JSON-спецификация OpenAPI:
-
-```
-GET /api-docs.json
-```
-
-Эту спецификацию можно использовать для автоматической генерации клиентов в различных языках программирования или для интеграции с внешними системами, включая AI-системы.
-
-## Интеграция с Goose AI-агентом
-
-Сервер поддерживает Model Context Protocol (MCP), что позволяет интегрировать его с [Goose AI-агентом](https://block.github.io/goose/).
-
-### MCP Endpoints
-
-```
-GET /mcp/manifest
-```
-Возвращает манифест MCP, описывающий возможности сервера.
-
-```
-POST /mcp/execute
-```
-Выполняет функцию через MCP протокол.
-
-### Пошаговая инструкция по добавлению в Goose
-
-1. **Установка и настройка Telegram MCP-сервера**:
-   - Установите и настройте Telegram MCP-сервер как описано выше
-   - Убедитесь, что сервер запущен и доступен по адресу: `http://localhost:3000`
-
-2. **Редактирование конфигурации Goose**:
-   - Откройте файл конфигурации Goose (обычно `~/.config/goose/config.json`)
-   - Добавьте новый MCP-сервер в раздел `mcps`:
-
-   ```json
-   "mcps": [
-     ...,
-     {
-       "name": "telegram",
-       "url": "http://localhost:3000/mcp"
-     }
-   ]
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/kdoronin/telegram_mcp
+   cd telegram-mcp
    ```
 
-3. **Перезапуск Goose**:
-   - Перезапустите Goose, чтобы он загрузил новую конфигурацию
-   - В логах Goose должно появиться сообщение о подключении к Telegram MCP-серверу
-
-4. **Использование в промпте**:
-   - Теперь вы можете использовать возможности Telegram в промптах для Goose
-   - Пример промпта:
-
+2. Install dependencies:
+   ```bash
+   npm install
    ```
-   Пожалуйста, получи список моих последних чатов в Telegram и покажи 5 самых новых сообщений из первого чата.
+   *(This will install the necessary packages: `gramjs`, `@modelcontextprotocol/sdk`, `zod`, etc.)*
+
+3. Create and configure the `.env` file:
+   ```bash
+   # Copy the example .env file
+   cp .env.example .env
    ```
+   Edit the `.env` file and specify your `API_ID` and `API_HASH`.
 
-5. **Первая авторизация**:
-   - При первом использовании сессии Telegram MCP-сервер запросит код подтверждения в консоли
-   - Введите код, полученный от Telegram, чтобы авторизовать сессию
-   - После авторизации сессия будет сохранена и использована для последующих запросов
+4. Get API ID and API Hash:
+   - Go to [my.telegram.org](https://my.telegram.org)
+   - Log in to your account
+   - Navigate to "API development tools"
+   - Create a new application
+   - Copy `api_id` and `api_hash` to your `.env` file
 
-### Пример использования через Goose
+## Running
 
-Вот как Goose может использовать Telegram MCP-сервер в ответе на запрос пользователя:
+### Important note about running
 
-```
-Пользователь: "Отправь сообщение 'Привет от Goose!' моему другу @john_doe в Telegram"
+The main server file `mcp-server.js` is located in the project root, which allows running it without path issues.
 
-Goose: "Я отправлю сообщение вашему другу. Подождите, пожалуйста..."
+### Option 1: Via npm (recommended)
 
-(Goose автоматически использует функцию sendMessage из Telegram MCP-сервера)
-
-Goose: "Сообщение успешно отправлено @john_doe: 'Привет от Goose!'"
-```
-
-## Примеры использования
-
-### Авторизация (первый запуск)
-При первом запуске для сессии потребуется авторизация. Сервер запросит код подтверждения в консоли.
-
-### Получение чатов
 ```bash
-curl -X GET "http://localhost:3000/api/dialogs?session=+79001234567&limit=10"
+npm run mcp    # Run from the project root directory
 ```
 
-### Отправка сообщения
+### Option 2: Direct node execution
+
 ```bash
-curl -X POST "http://localhost:3000/api/send" \
-  -H "Content-Type: application/json" \
-  -d '{"session": "+79001234567", "chatId": "username", "message": "Hello, world!"}'
+# Run from the project root directory
+node mcp-server.js
 ```
 
-## Безопасность
+### Option 3: As an executable file
 
-- Сервер должен запускаться в доверенной среде
-- API ID и API Hash не должны передаваться третьим лицам
-- Сохраняйте файлы сессий в безопасном месте
+```bash
+# From the project root
+./mcp-server.js
+```
 
-## Лицензия
+### Option 4: After global installation
+
+```bash
+npm install -g .   # Install the package globally
+telegram-mcp       # Run the globally installed package
+```
+
+## Integration with MCP clients
+
+### Configuration in Cursor
+
+1. Open Cursor settings
+2. Go to Features -> MCP Servers
+3. Click "Add new MCP server"
+4. Configure the server:
+   - **Name**: `telegram` (or any other)
+   - **Type**: `command`
+   - **Command**: `node /full/path/to/project/mcp-server.js`
+   - Alternatively: `npx telegram-mcp` (after global installation)
+
+### Configuration in Claude Desktop
+
+1. Open Claude Desktop settings
+2. Go to Tools -> MCP
+3. Click "Add New Server"
+4. Configure the server:
+   - **Name**: `telegram` (or any other)
+   - **Type**: `command`
+   - **Command**: `node /full/path/to/project/mcp-server.js`
+   - Alternatively: `npx telegram-mcp` (after global installation)
+
+## Checking functionality
+
+When the server starts:
+1. It will load settings from the `.env` file
+2. Check for saved sessions
+3. If there are no sessions, it will offer to create a new one (you will need to enter a phone number and confirmation code)
+
+## Available Tools
+
+The MCP server provides the following tools:
+
+- **`getDialogs`**: Gets a list of user dialogs (chats).
+  - Parameters: `session` (string, required), `limit` (integer, optional, default: 100).
+- **`getMessages`**: Gets messages from the specified chat.
+  - Parameters: `session` (string, required), `chatId` (string, required), `limit` (integer, optional, default: 100).
+- **`sendMessage`**: Sends a message to the specified chat.
+  - Parameters: `session` (string, required), `chatId` (string, required), `message` (string, required).
+- **`executeMethod`**: Executes an arbitrary Telegram API method (use with caution).
+  - Parameters: `session` (string, required), `method` (string, required), `params` (object, optional).
+
+*Note: The `session` parameter is usually the user's phone number in international format (e.g., `+79001234567`).*
+
+## Usage examples in prompts
+
+```
+Using the telegram.getDialogs tool for session +79001234567, show me the last 5 chats.
+```
+
+```
+With telegram.sendMessage for session +79001234567, send the message "Hello from my AI assistant!" to chat with ID 'username_or_chat_id'.
+```
+
+## Authorization
+
+When using a `session` (phone number) for the first time, the server will request a **confirmation code in the console** where it is running. Enter the code received from Telegram to authorize the session.
+
+If you have two-factor authentication (2FA) enabled, you will also need to enter your Telegram password. If the password is entered incorrectly, the system will prompt you to enter it again (up to 3 attempts).
+
+After successful authorization, the session will be saved to a file inside the `sessions/` directory and will be used for subsequent requests.
+
+## Session file structure
+
+Sessions are stored in the `sessions/` directory as JSON files named after the phone number (e.g., `+79001234567.json`). Each file contains:
+- A session string (encrypted authorization token)
+- A timestamp of creation/update
+
+## Troubleshooting
+
+1. **Error "Your API ID or Hash cannot be empty or undefined"**
+   - Check that the `.env` file is in the project root
+   - Make sure API_ID and API_HASH are correctly specified in it
+   - Run the server from the project root directory
+
+2. **Server doesn't see the saved session**
+   - Check the execution path (should be from the project root)
+   - Check for the session file in the `sessions/` directory
+   - Try running with `npm run mcp`
+
+3. **Authorization error**
+   - If you entered an incorrect 2FA password, the system will prompt you to re-enter it
+   - If all attempts are exhausted, delete the session file and try again
+
+## Security
+
+- **Do not share your API ID and API Hash with third parties.**
+- **Run the server in a trusted environment.**
+- **Session files contain sensitive data.** Store them in a secure location and do not share them.
+- The `executeMethod` tool allows executing any Telegram API methods. Use it with caution, as it can perform destructive actions.
+
+## License
 
 MIT 

@@ -1,183 +1,303 @@
-import { TelegramClient } from 'telegram';
+import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import input from 'input';
-import { join } from 'path';
 import fs from 'fs';
-import logger from './logger.js';
+import path from 'path';
+import { serializeError } from 'serialize-error';
 import config from './config.js';
+import logger from './logger.js';
 
 // Map to store active client sessions
 const clientSessions = new Map();
 
+// Path to sessions directory
+const sessionsDir = config.sessionPath;
+
+// Proxy class for TelegramClient that will use existing session
+// and ignore missing API ID/Hash
+class SessionOnlyClient extends TelegramClient {
+  constructor(session, apiId, apiHash, options) {
+    super(session, apiId || 1, apiHash || 'placeholder_hash_for_session_only', options);
+    this._sessionOnly = true;
+  }
+}
+
 /**
- * Get or create a client session
- * @param {string} sessionId - Unique session identifier (typically phone number)
+ * Create or connect Telegram client for specified session
+ * @param {string} sessionId - Session ID (usually phone number)
+ * @param {boolean} forceNew - Force create new client (for testing)
  * @returns {Promise<TelegramClient>} Telegram client
  */
-export async function getClient(sessionId) {
-  // Generate a consistent session ID (remove any non-alphanumeric chars)
-  const cleanSessionId = sessionId.replace(/[^a-zA-Z0-9]/g, '');
+export async function getClient(sessionId, forceNew = false) {
+  logger.info(`Client request for session ${sessionId}`);
   
-  // Check if we already have an active session
-  if (clientSessions.has(cleanSessionId)) {
-    logger.info(`Using existing session for ${cleanSessionId}`);
-    return clientSessions.get(cleanSessionId);
+  // Check if client already exists in memory
+  if (!forceNew && clientSessions.has(sessionId)) {
+    logger.info(`Using existing session from memory for ${sessionId}`);
+    return clientSessions.get(sessionId);
   }
 
-  // Path to session file
-  const sessionPath = join(config.sessionPath, `${cleanSessionId}.session`);
-  
-  // Check if we have a stored session
+  // Check if session file exists
+  const sessionFile = path.join(sessionsDir, `${sessionId}.json`);
   let stringSession = new StringSession('');
-  if (fs.existsSync(sessionPath)) {
-    const sessionData = fs.readFileSync(sessionPath, 'utf8');
-    stringSession = new StringSession(sessionData);
-    logger.info(`Loaded session from file for ${cleanSessionId}`);
+  let existingSession = false;
+
+  logger.info(`Session file path: ${sessionFile}`);
+  logger.info(`Session file exists: ${fs.existsSync(sessionFile)}`);
+
+  if (fs.existsSync(sessionFile)) {
+    logger.debug(`Found existing session file for ${sessionId}`);
+    try {
+      const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+      logger.info(`Session file content found`);
+      
+      if (sessionData.session) {
+        stringSession = new StringSession(sessionData.session);
+        existingSession = true;
+        logger.debug(`Loaded session data for ${sessionId}`);
+      } else {
+        logger.warn(`Session file exists but has no valid session data for ${sessionId}`);
+      }
+    } catch (error) {
+      logger.error(`Error loading session file: ${error.message}`);
+      // If file is damaged, continue with new session
+    }
   }
 
-  // Create new client
-  const client = new TelegramClient(
-    stringSession,
-    config.apiId,
-    config.apiHash,
-    {
-      connectionRetries: 5,
+  logger.info(`Existing session found: ${existingSession}`);
+  logger.info(`Current API_ID and API_HASH: ${config.apiId}, ${config.apiHash ? 'set' : 'not set'}`);
+
+  // If we have existing session, we can use default values for API ID and Hash
+  // Otherwise we need them
+  if (!existingSession && (!config.apiId || !config.apiHash)) {
+    throw new Error('Your API ID or Hash cannot be empty or undefined for creating a new session');
+  }
+
+  // For existing session, use special client that ignores API ID/Hash
+  // For new session, use standard client with real API ID/Hash
+  let client;
+  
+  if (existingSession) {
+    // Client only for working with existing session (can work with any API ID/Hash values)
+    client = new SessionOnlyClient(
+      stringSession,
+      1,  // dummy API ID
+      'placeholder_hash', // dummy API Hash
+      { connectionRetries: 5 }
+    );
+  } else {
+    // Standard client for creating new session (requires real API ID/Hash)
+    client = new TelegramClient(
+      stringSession,
+      config.apiId,
+      config.apiHash,
+      { connectionRetries: 5 }
+    );
+  }
+
+  let authorized = false;
+  let maxAttempts = 3;
+  let attempts = 0;
+
+  // If we have existing session, try to connect without interactive authorization
+  if (existingSession) {
+    try {
+      logger.debug(`Connecting with existing session for ${sessionId}`);
+      await client.connect();
+      
+      // Check that session is actually authorized
+      if (await client.isUserAuthorized()) {
+        logger.info(`Successfully connected with existing session for ${sessionId}`);
+        authorized = true;
+        clientSessions.set(sessionId, client);
+        return client;
+      } else {
+        logger.warn(`Session exists but not authorized for ${sessionId}, will try interactive login`);
+      }
+    } catch (error) {
+      logger.error(`Error connecting with existing session: ${error.message}`);
+      // If failed to connect with existing session,
+      // and we don't have API ID/Hash, throw error
+      if (!config.apiId || !config.apiHash) {
+        throw new Error('Cannot connect with existing session and no API credentials provided');
+      }
+      // Otherwise try interactive authorization
     }
-  );
+  }
 
-  // Start the client
-  await client.start({
-    phoneNumber: async () => sessionId,
-    password: async () => await input.text('Please enter your password: '),
-    phoneCode: async () => await input.text('Please enter the code you received: '),
-    onError: (err) => logger.error(`Connection error: ${err}`),
-  });
+  // If no existing session or it didn't work, and we have API ID/Hash,
+  // perform interactive authorization
+  while (!authorized && attempts < maxAttempts) {
+    attempts++;
+    try {
+      logger.debug(`Starting client for session ${sessionId} (attempt ${attempts})`);
+      
+      await client.start({
+        phoneNumber: async () => sessionId,
+        password: async () => {
+          // If this is a repeated attempt, inform the user
+          if (attempts > 1) {
+            console.log("\nInvalid password. Please try again.");
+          }
+          return await input.text('Please enter your 2FA password: ');
+        },
+        phoneCode: async () => await input.text('Please enter the confirmation code: '),
+        onError: (err) => {
+          logger.error(`Error in client start: ${err.message}`);
+          throw err;
+        }
+      });
+      
+      // If we reached this point, authorization is successful
+      authorized = true;
+      
+      // Save session only after successful authorization
+      const sessionString = client.session.save();
+      fs.writeFileSync(
+        sessionFile,
+        JSON.stringify({ session: sessionString, timestamp: Date.now() })
+      );
+      logger.debug(`Saved session data for ${sessionId}`);
+      
+      // Add to active sessions Map
+      clientSessions.set(sessionId, client);
+      
+    } catch (error) {
+      if (error.message && error.message.includes('PASSWORD_HASH_INVALID')) {
+        logger.warn(`Invalid password for session ${sessionId}, attempt ${attempts}`);
+        // Continue loop for retry
+      } else if (error.message && error.message.includes('PHONE_CODE_INVALID')) {
+        logger.warn(`Invalid phone code for session ${sessionId}`);
+        // Return to code request
+        attempts--;
+      } else {
+        // If error is not related to password or code, abort attempts
+        logger.error(`Authentication error for session ${sessionId}: ${error.message}`);
+        throw error;
+      }
+    }
+  }
 
-  // Save session to file
-  fs.writeFileSync(sessionPath, client.session.save());
-  logger.info(`Saved session to file for ${cleanSessionId}`);
-  
-  // Store in memory
-  clientSessions.set(cleanSessionId, client);
-  
+  if (!authorized) {
+    throw new Error(`Failed to authenticate after ${maxAttempts} attempts. Check your credentials.`);
+  }
+
   return client;
 }
 
 /**
- * Helper function to safely serialize Telegram objects
- * @param {object} obj - The object to serialize
- * @returns {object} - Safe-to-serialize object
+ * Check for existing sessions at startup
+ * and offer authorization if sessions are missing
  */
-function serializeTelegramObject(obj) {
-  if (!obj) return null;
+export async function checkSessionsOnStartup() {
+  logger.info('Checking for saved sessions...');
   
-  // If it's an array, process each item
-  if (Array.isArray(obj)) {
-    return obj.map(item => serializeTelegramObject(item));
+  // Create sessions directory if it doesn't exist
+  if (!fs.existsSync(sessionsDir)) {
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    logger.info(`Created sessions directory: ${sessionsDir}`);
   }
   
-  // If it's not an object or null, return as is
-  if (typeof obj !== 'object' || obj === null) {
-    return obj;
-  }
+  // Check if there are session files in the directory
+  const sessionFiles = fs.readdirSync(sessionsDir)
+    .filter(file => file.endsWith('.json'));
   
-  // Handle Date objects
-  if (obj instanceof Date) {
-    return obj.toISOString();
-  }
-  
-  // For other objects, extract only serializable properties
-  const result = {};
-  for (const key in obj) {
-    // Skip functions, symbols, and other non-serializable things
-    if (typeof obj[key] === 'function' || typeof obj[key] === 'symbol') {
-      continue;
-    }
+  if (sessionFiles.length > 0) {
+    logger.info(`Found ${sessionFiles.length} saved sessions:`);
     
-    // Skip properties that start with underscore (usually internal)
-    if (key.startsWith('_')) {
-      continue;
-    }
+    // Array for valid sessions
+    const validSessions = [];
     
-    try {
-      // Recursively process nested objects
-      result[key] = serializeTelegramObject(obj[key]);
-    } catch (e) {
-      // If we can't serialize this property, skip it
-      result[key] = `[Unserializable: ${e.message}]`;
-    }
-  }
-  
-  return result;
-}
-
-/**
- * Execute a Telegram API method
- * @param {string} sessionId - Session identifier (phone number)
- * @param {string} method - API method name
- * @param {object} params - Method parameters
- * @returns {Promise<any>} API response
- */
-export async function executeMethod(sessionId, method, params = {}) {
-  try {
-    logger.info(`Executing method ${method} for session ${sessionId}`);
-    const client = await getClient(sessionId);
-    
-    let result;
-    
-    // Check if method exists in the client
-    if (typeof client[method] === 'function') {
-      result = await client[method](params);
-    } else {
-      // Try to access nested API methods
-      const [namespace, func] = method.split('.');
-      if (client[namespace] && typeof client[namespace][func] === 'function') {
-        result = await client[namespace][func](params);
-      } else {
-        // Invoke the method directly (advanced usage)
-        result = await client.invoke({
-          _: method,
-          ...params
-        });
+    // Check each session
+    for (const file of sessionFiles) {
+      const sessionId = path.basename(file, '.json');
+      
+      // Check session functionality by trying to read it
+      try {
+        const sessionData = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf8'));
+        if (sessionData.session) {
+          validSessions.push(sessionId);
+          logger.info(`- ${sessionId} (valid)`);
+        } else {
+          logger.warn(`- ${sessionId} (damaged - missing session string)`);
+        }
+      } catch (error) {
+        logger.warn(`- ${sessionId} (failed to read: ${error.message})`);
       }
     }
     
-    // Safely serialize the result
-    return serializeTelegramObject(result);
+    if (validSessions.length > 0) {
+      logger.info(`Found ${validSessions.length} working sessions, can use any of them for API access`);
+      
+      // Optionally check the first session to make sure it works
+      try {
+        const testClient = await getClient(validSessions[0]);
+        logger.info(`Test connection to ${validSessions[0]} successful`);
+      } catch (error) {
+        logger.warn(`Failed to connect to session ${validSessions[0]}: ${error.message}`);
+      }
+      
+      return;
+    }
+    
+    logger.warn('Found sessions are damaged or non-working');
+  } else {
+    logger.info('No saved sessions found.');
+  }
+  
+  // If no working sessions found, offer to create a new one, but API_ID and API_HASH are needed
+  if (!config.apiId || !config.apiHash) {
+    logger.error('API_ID or API_HASH not specified in .env file');
+    logger.info('To create a new session, you need to specify API_ID and API_HASH in the .env file');
+    return;
+  }
+  
+  const createSession = await input.text('Do you want to create a new session? (yes/no): ');
+  if (createSession.toLowerCase() !== 'yes') {
+    logger.info('Session creation cancelled.');
+    return;
+  }
+  
+  // Request phone number
+  const phoneNumber = await input.text('Enter phone number (in international format, e.g. +79001234567): ');
+  if (!phoneNumber) {
+    logger.error('Phone number cannot be empty');
+    return;
+  }
+  
+  try {
+    logger.info('Creating new session...');
+    // Initiate client creation, which will request a code and perform authorization
+    await getClient(phoneNumber);
+    logger.info(`Session for number ${phoneNumber} successfully created and saved.`);
   } catch (error) {
-    logger.error(`Error executing method ${method}: ${error.message}`);
-    throw error;
+    logger.error(`Error creating session: ${error.message}`);
   }
 }
 
 /**
- * Get user dialogs (chats)
- * @param {string} sessionId - Session identifier
- * @param {number} limit - Maximum number of dialogs to return
- * @returns {Promise<any>} List of dialogs
+ * Get list of dialogs (chats)
+ * @param {string} sessionId - Session ID
+ * @param {number} limit - Maximum number of dialogs
+ * @returns {Promise<Array>} Array of dialogs
  */
 export async function getDialogs(sessionId, limit = 100) {
   try {
     const client = await getClient(sessionId);
     const dialogs = await client.getDialogs({ limit });
     
-    // Process dialogs to make them serializable
-    return dialogs.map(dialog => {
-      return {
-        id: dialog.id,
-        name: dialog.title || dialog.name,
-        unreadCount: dialog.unreadCount,
-        lastMessage: dialog.message ? {
-          id: dialog.message.id,
-          text: dialog.message.message,
-          date: dialog.message.date,
-          senderId: dialog.message.senderId,
-        } : null,
-        isChannel: dialog.isChannel,
-        isGroup: dialog.isGroup,
-        isUser: dialog.isUser,
-      };
-    });
+    // Transform data into more readable format
+    return dialogs.map(dialog => ({
+      id: dialog.id.toString(),
+      name: dialog.title,
+      type: dialog.isUser ? 'user' : dialog.isGroup ? 'group' : dialog.isBroadcast ? 'channel' : 'unknown',
+      unreadCount: dialog.unreadCount,
+      lastMessage: dialog.message ? {
+        text: dialog.message.message || '',
+        date: new Date(dialog.message.date * 1000).toISOString(),
+        fromMe: dialog.message.fromId?.toString() === client.session.userId?.toString()
+      } : null
+    }));
   } catch (error) {
     logger.error(`Error in getDialogs: ${error.message}`);
     throw error;
@@ -185,32 +305,32 @@ export async function getDialogs(sessionId, limit = 100) {
 }
 
 /**
- * Get messages from a chat
- * @param {string} sessionId - Session identifier
- * @param {number|string} chatId - Chat ID or username
- * @param {number} limit - Maximum number of messages to return
- * @returns {Promise<any>} List of messages
+ * Get messages from chat
+ * @param {string} sessionId - Session ID
+ * @param {string} chatId - Chat ID or username
+ * @param {number} limit - Maximum number of messages
+ * @returns {Promise<Array>} Array of messages
  */
 export async function getMessages(sessionId, chatId, limit = 100) {
   try {
     const client = await getClient(sessionId);
     const messages = await client.getMessages(chatId, { limit });
     
-    // Process messages to make them serializable
-    return messages.map(msg => {
-      return {
-        id: msg.id,
-        text: msg.message,
-        date: msg.date,
-        senderId: msg.senderId,
-        replyToMsgId: msg.replyToMsgId,
-        isOutgoing: msg.out,
-        media: msg.media ? {
-          type: msg.media.className || 'unknown',
-          // Add other media properties as needed
-        } : null,
-      };
-    });
+    // Transform data into more readable format
+    return messages.map(msg => ({
+      id: msg.id.toString(),
+      text: msg.message || '',
+      date: new Date(msg.date * 1000).toISOString(),
+      fromMe: msg.fromId?.toString() === client.session.userId?.toString(),
+      sender: msg.sender ? {
+        id: msg.sender.id?.toString(),
+        username: msg.sender.username || '',
+        firstName: msg.sender.firstName || '',
+        lastName: msg.sender.lastName || '',
+      } : null,
+      hasMedia: !!msg.media,
+      mediaType: msg.media ? msg.media.className.replace('MessageMedia', '') : null
+    }));
   } catch (error) {
     logger.error(`Error in getMessages: ${error.message}`);
     throw error;
@@ -218,26 +338,64 @@ export async function getMessages(sessionId, chatId, limit = 100) {
 }
 
 /**
- * Send message to a chat
- * @param {string} sessionId - Session identifier
- * @param {number|string} chatId - Chat ID or username
+ * Send message
+ * @param {string} sessionId - Session ID
+ * @param {string} chatId - Chat ID or username
  * @param {string} message - Message text
- * @returns {Promise<any>} Sent message
+ * @returns {Promise<Object>} Send result
  */
 export async function sendMessage(sessionId, chatId, message) {
   try {
     const client = await getClient(sessionId);
     const result = await client.sendMessage(chatId, { message });
     
-    // Return a simplified version of the sent message
     return {
-      id: result.id,
-      text: result.message,
-      date: result.date,
-      isOutgoing: result.out,
+      success: true,
+      messageId: result.id.toString(),
+      date: new Date(result.date * 1000).toISOString()
     };
   } catch (error) {
     logger.error(`Error in sendMessage: ${error.message}`);
     throw error;
+  }
+}
+
+/**
+ * Execute arbitrary Telegram API method
+ * @param {string} sessionId - Session ID
+ * @param {string} method - Method name
+ * @param {Object} params - Method parameters
+ * @returns {Promise<Object>} Method execution result
+ */
+export async function executeMethod(sessionId, method, params = {}) {
+  try {
+    const client = await getClient(sessionId);
+    
+    // Check if method exists in API
+    if (!Api.functions[method]) {
+      throw new Error(`Method ${method} not found in Telegram API`);
+    }
+    
+    // Execute method
+    const result = await client.invoke(new Api.functions[method](params));
+    
+    // Transform Telegram objects into serializable objects
+    return JSON.parse(JSON.stringify(result, (key, value) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        if (value.className) {
+          return {
+            ...value,
+            _type: value.className
+          };
+        }
+      }
+      return value;
+    }));
+  } catch (error) {
+    logger.error(`Error in executeMethod: ${error.message}`);
+    
+    // Serialize error for more detailed information
+    const serializedError = serializeError(error);
+    throw new Error(serializedError.message || 'Unknown error');
   }
 } 
